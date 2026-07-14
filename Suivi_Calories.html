@@ -286,6 +286,16 @@ nav button.on{color:var(--acc2)} nav button.on .ico{filter:none;opacity:1}
   </div>
 
   <div class="card">
+    <h3>☁️ Sauvegarde cloud <span class="sub" id="syncStatus">…</span></h3>
+    <div class="xs mut" style="margin-bottom:10px">Tes données se sauvegardent automatiquement. Note ce code : entre-le à l'identique sur un autre appareil pour retrouver tes données.</div>
+    <div class="field" style="margin:0"><label>Ton code de sync</label><input id="syncCodeInp" placeholder="Ton code…"></div>
+    <div class="grid2" style="margin-top:10px">
+      <button class="btn ghost small" style="width:100%" id="copySync">📋 Copier le code</button>
+      <button class="btn small" style="width:100%" id="applySync">Utiliser ce code</button>
+    </div>
+  </div>
+
+  <div class="card">
     <h3>⚙️ Données</h3>
     <button class="btn ghost small" id="exportBtn" style="margin-bottom:8px;width:100%">⬇️ Exporter (sauvegarde)</button>
     <button class="btn danger small" id="resetBtn" style="width:100%">Réinitialiser aujourd'hui</button>
@@ -339,6 +349,8 @@ nav button.on{color:var(--acc2)} nav button.on .ico{filter:none;opacity:1}
 
 <div class="toast" id="toast"></div>
 
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script>
 const LSKEY = 'kcal_pierre_v1';
 const CATS = ['Petit-déj','Déjeuner','Dîner','Snack/Autre'];
@@ -370,7 +382,7 @@ function load(){
   if(!S.favs) S.favs=JSON.parse(JSON.stringify(DEFAULT_FAVS));
   if(!S.days[S.cur]) S.days[S.cur]={items:[],garmin:null};
 }
-function save(){localStorage.setItem(LSKEY, JSON.stringify(S));}
+function save(){S._updated=Date.now();localStorage.setItem(LSKEY, JSON.stringify(S));pushCloud();}
 function curDay(){ if(!S.days[S.cur]) S.days[S.cur]={items:[],garmin:null}; return S.days[S.cur]; }
 function fmt(n){return Math.round(n).toLocaleString('fr-FR');}
 
@@ -552,7 +564,7 @@ function nav(pg){
   document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.nav===pg));
   document.querySelectorAll('.page').forEach(s=>s.classList.toggle('on',s.dataset.pg===pg));
   if(pg==='hist') renderHist();
-  if(pg==='set'){document.getElementById('setK').value=S.targetK;document.getElementById('setP').value=S.targetP;renderFavManage();}
+  if(pg==='set'){document.getElementById('setK').value=S.targetK;document.getElementById('setP').value=S.targetP;renderFavManage();renderSyncUI();}
   window.scrollTo(0,0);
 }
 
@@ -652,8 +664,54 @@ document.getElementById('exportBtn').addEventListener('click',()=>{
 // close modal on backdrop tap
 document.querySelectorAll('.modal').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('on');}));
 
+/* ---- CLOUD SYNC (Firebase) ---- */
+const FB_CONFIG={apiKey:"AIzaSyDjZKV3qDUqTbIYlerbMF2DiU3jwaFvoYo",authDomain:"sport-pierre.firebaseapp.com",databaseURL:"https://sport-pierre-default-rtdb.firebaseio.com",projectId:"sport-pierre",storageBucket:"sport-pierre.firebasestorage.app",messagingSenderId:"332009218637",appId:"1:332009218637:web:567a28a72b5e55e00eb204"};
+const SYNC_LS='pierre_sync_code';
+let db=null,syncCode=null,syncRef=null,applyingRemote=false,cloudReady=false;
+function genCode(){try{return 'px-'+crypto.randomUUID().replace(/-/g,'').slice(0,16);}catch(e){return 'px-'+Date.now().toString(36)+Math.random().toString(36).slice(2,10);}}
+function renderAll(){renderDay();renderFavs();const h=document.querySelector('.page[data-pg="hist"]');if(h&&h.classList.contains('on'))renderHist();renderSyncUI();}
+function updateSyncStatus(st){
+  const el=document.getElementById('syncStatus'); if(!el)return;
+  if(st==='ok'){el.textContent='· synchronisé ✓';el.className='sub ok';}
+  else if(st==='err'){el.textContent='· hors ligne';el.className='sub warn';}
+  else{el.textContent='· indisponible';el.className='sub mut';}
+}
+function renderSyncUI(){const i=document.getElementById('syncCodeInp');if(i&&document.activeElement!==i)i.value=syncCode||'';}
+function pushCloud(){if(!cloudReady||!syncCode||applyingRemote||!db)return;try{db.ref(syncCode+'/kcal').set(S);}catch(e){}}
+function adoptRemote(c){applyingRemote=true;S=c;localStorage.setItem(LSKEY,JSON.stringify(S));renderAll();applyingRemote=false;}
+function connectSync(){
+  if(!db||!syncCode)return;
+  if(syncRef){syncRef.off();syncRef=null;}
+  cloudReady=true;
+  syncRef=db.ref(syncCode+'/kcal');
+  syncRef.once('value').then(snap=>{
+    const c=snap.val();
+    if(c&&c._updated&&(!S._updated||c._updated>S._updated))adoptRemote(c);
+    else pushCloud();
+    syncRef.on('value',s=>{const cc=s.val();if(cc&&cc._updated&&cc._updated>(S._updated||0))adoptRemote(cc);});
+    updateSyncStatus('ok');
+  }).catch(e=>{updateSyncStatus('err');});
+}
+function initCloud(){
+  if(!window.firebase){updateSyncStatus('noscript');return;}
+  try{firebase.initializeApp(FB_CONFIG);db=firebase.database();}catch(e){}
+  syncCode=localStorage.getItem(SYNC_LS);
+  if(!syncCode){syncCode=genCode();localStorage.setItem(SYNC_LS,syncCode);setTimeout(()=>toast('☁️ Sauvegarde cloud activée'),400);}
+  connectSync();
+}
+function setSyncCode(code){
+  code=(code||'').trim();
+  if(!code){toast('Code vide',true);return;}
+  syncCode=code;localStorage.setItem(SYNC_LS,code);
+  cloudReady=false;connectSync();renderSyncUI();toast('Code de sync appliqué');
+}
+document.getElementById('applySync').addEventListener('click',()=>setSyncCode(document.getElementById('syncCodeInp').value));
+document.getElementById('copySync').addEventListener('click',()=>{
+  try{navigator.clipboard.writeText(syncCode||'');toast('Code copié 📋');}catch(e){toast('Copie impossible',true);}
+});
+
 /* ---- init ---- */
-load(); renderDay(); renderFavs();
+load(); renderDay(); renderFavs(); initCloud(); renderSyncUI();
 </script>
 </body>
 </html>

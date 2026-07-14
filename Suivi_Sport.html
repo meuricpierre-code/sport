@@ -201,6 +201,8 @@ input[type=number],input[type=date],select,textarea{
   <button data-pg="guide"><span class="ico">📖</span>Guide</button>
 </nav>
 
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script>
 /* ============ DONNÉES DU PROGRAMME (source : Programme_Sculpte_6_Mois_Pierre.pdf + coaching 06/07/2026) ============ */
 const START = new Date(2026,6,6); // lundi 6 juillet 2026, semaine 1
@@ -478,7 +480,7 @@ function migrate(st){
   }
   return st;
 }
-function save(){ try{ localStorage.setItem(LSKEY, JSON.stringify(S)); }catch(e){ alert("Stockage plein ou bloqué : exporte tes données !"); } }
+function save(){ S._updated=Date.now(); try{ localStorage.setItem(LSKEY, JSON.stringify(S)); }catch(e){ alert("Stockage plein ou bloqué : exporte tes données !"); } pushCloud(); }
 
 /* ============ PROGRAMME PERSONNALISÉ ============ */
 // Renvoie une séance avec les exos éventuellement modifiés par l'utilisateur.
@@ -1117,6 +1119,14 @@ function rBody(){
   const wk=Math.min(Math.max(weekOf(d),1),TOTAL_WEEKS);
   const nu=(wk===9||wk===10)?NUTRI[1]:wk<=8?NUTRI[0]:wk<=16?NUTRI[2]:NUTRI[3];
   h+=`<div class="card"><h3>🍽️ Cap nutrition actuel</h3><div class="sm" style="line-height:1.7"><b class="accent">${nu.k}</b> · ${esc(nu.n)}<br>🥩 <b>180 g protéines/jour — ne baisse JAMAIS</b> · 💧 3 L d'eau · shaker whey + banane à 16h.</div></div>`;
+  // sauvegarde cloud
+  h+=`<div class="card"><h3>☁️ Sauvegarde cloud <span class="sub" id="syncStatusS"></span></h3>
+    <div class="xs mut" style="margin-bottom:8px">Tes données se sauvegardent automatiquement. Note ce code : entre-le à l'identique sur un autre appareil pour tout retrouver.</div>
+    <input id="syncCodeInpS" placeholder="Ton code de sync…" style="width:100%">
+    <div class="grid2" style="margin-top:10px">
+      <button class="btn ghost small" onclick="copySyncCode()">📋 Copier</button>
+      <button class="btn small" onclick="applySyncCode()">Utiliser ce code</button>
+    </div></div>`;
   // données
   h+=`<div class="card"><h3>💾 Données</h3>
     <div class="grid2">
@@ -1129,6 +1139,7 @@ function rBody(){
     <button class="btn danger small" style="margin-top:12px" onclick="if(confirm('Tout effacer ? Irréversible.')){localStorage.removeItem(LSKEY);location.reload()}">Réinitialiser l'appli</button>
   </div>`;
   $("pg-body").innerHTML=h;
+  renderSyncUIS();
 }
 function addBW(){ const v=parseFloat($("bw").value); if(!v||v<40||v>200){toast("Valeur invalide");return;}
   const ds=fmtD(today()); S.weights=S.weights.filter(w=>w.d!==ds); S.weights.push({d:ds,v}); S.weights.sort((a,b)=>a.d<b.d?-1:1); save(); rBody(); toast("Noté 👊"); }
@@ -1233,12 +1244,48 @@ function rGuide(){
   $("pg-guide").innerHTML=h;
 }
 
+/* ============ CLOUD SYNC (Firebase) ============ */
+const FB_CONFIG={apiKey:"AIzaSyDjZKV3qDUqTbIYlerbMF2DiU3jwaFvoYo",authDomain:"sport-pierre.firebaseapp.com",databaseURL:"https://sport-pierre-default-rtdb.firebaseio.com",projectId:"sport-pierre",storageBucket:"sport-pierre.firebasestorage.app",messagingSenderId:"332009218637",appId:"1:332009218637:web:567a28a72b5e55e00eb204"};
+const SYNC_LS="pierre_sync_code";
+let db=null,syncCode=null,syncRef=null,applyingRemote=false,cloudReady=false;
+function genCode(){ try{ return "px-"+crypto.randomUUID().replace(/-/g,"").slice(0,16); }catch(e){ return "px-"+Date.now().toString(36)+Math.random().toString(36).slice(2,10); } }
+function currentTab(){ const b=document.querySelector("nav button.on"); return b?b.dataset.pg:"home"; }
+function renderAll(){ try{ switchTab(currentTab()); }catch(e){} }
+function updateSyncStatusS(){ const el=$("syncStatusS"); if(!el)return; if(cloudReady){ el.textContent="· synchronisé ✓"; el.style.color="var(--ok)"; } else { el.textContent="· hors ligne"; el.style.color="var(--mut)"; } }
+function renderSyncUIS(){ const i=$("syncCodeInpS"); if(i&&document.activeElement!==i)i.value=syncCode||""; updateSyncStatusS(); }
+function pushCloud(){ if(!cloudReady||!syncCode||applyingRemote||!db)return; try{ db.ref(syncCode+"/sport").set(S); }catch(e){} }
+function adoptRemote(c){ applyingRemote=true; S=c; try{ localStorage.setItem(LSKEY,JSON.stringify(S)); }catch(e){} renderAll(); applyingRemote=false; }
+function connectSync(){
+  if(!db||!syncCode)return;
+  if(syncRef){ syncRef.off(); syncRef=null; }
+  cloudReady=true;
+  syncRef=db.ref(syncCode+"/sport");
+  syncRef.once("value").then(snap=>{
+    const c=snap.val();
+    if(c&&c._updated&&(!S._updated||c._updated>S._updated))adoptRemote(c);
+    else pushCloud();
+    syncRef.on("value",s=>{ const cc=s.val(); if(cc&&cc._updated&&cc._updated>(S._updated||0))adoptRemote(cc); });
+    updateSyncStatusS();
+  }).catch(e=>{ cloudReady=false; updateSyncStatusS(); });
+}
+function initCloud(){
+  if(!window.firebase)return;
+  try{ firebase.initializeApp(FB_CONFIG); db=firebase.database(); }catch(e){}
+  syncCode=localStorage.getItem(SYNC_LS);
+  if(!syncCode){ syncCode=genCode(); localStorage.setItem(SYNC_LS,syncCode); setTimeout(()=>toast("☁️ Sauvegarde cloud activée"),400); }
+  connectSync();
+}
+function setSyncCode(code){ code=(code||"").trim(); if(!code){ toast("Code vide"); return; } syncCode=code; localStorage.setItem(SYNC_LS,code); cloudReady=false; connectSync(); renderSyncUIS(); toast("Code de sync appliqué"); }
+function applySyncCode(){ const i=$("syncCodeInpS"); setSyncCode(i?i.value:""); }
+function copySyncCode(){ try{ navigator.clipboard.writeText(syncCode||""); toast("Code copié 📋"); }catch(e){ toast("Copie impossible"); } }
+
 /* ============ INIT (v1.0) ============ */
 (function(){
   const d=today(), wd=d.getDay(), wk=Math.min(Math.max(weekOf(d),1),TOTAL_WEEKS), ph=phaseOf(wk);
   $("hdate").textContent=DAYS[wd]+" "+frD(fmtD(d))+" · Semaine "+wk+"/"+TOTAL_WEEKS;
   $("hphase").textContent="Phase "+ph+" · "+["","FONDATIONS","CONSTRUCTION","SCULPTURE"][ph];
   if(S.draft) switchTab("workout"); else switchTab("home");
+  initCloud();
 })();
 </script>
 </body>
